@@ -9,6 +9,7 @@ Once generated, icon components are stored in individual files, with the followi
 
 1. Clone repo
 1. `npm pack`
+   1. Use `CREATE_INDEX=true npm pack` to build with an `index.ts` barrel file in the `dist` directory
 1. Move artifact to your project (e.g: in a `vendor` directory)
 1. Install (e.g: `npm i file:vendor/heroicons-wc-x.x.x.tgz`)
 
@@ -16,8 +17,11 @@ Once generated, icon components are stored in individual files, with the followi
 
 1. Import the icon:
     ```js
+    import "heroicons-wc";  // Requires: `CREATE_INDEX=true during build`
+    import "heroicons-wc/outline.js";  // Requires: `CREATE_INDEX=true during build`
     import "heroicons-wc/hi-outline-shopping-cart.js";
     ```
+
 1. Use it like any html element:
     ```html
     <hi-outline-shopping-cart></hi-outline-shopping-cart>

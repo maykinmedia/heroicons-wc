@@ -5,6 +5,14 @@ import * as csso from "csso";
 import { minify as minifyHtml } from "html-minifier-terser";
 import ora from "ora";
 
+
+const ICON_GROUPS = /** @type {const} */ ([
+  { path: "24/solid", name: "solid", size: "1.5rem" },
+  { path: "24/outline", name: "outline", size: "1.5rem" },
+  { path: "20/solid", name: "mini", size: "1.25rem" },
+  { path: "16/solid", name: "micro", size: "1rem" },
+]);
+
 const utils = {
   escapeSingleQuotes: (str) =>
     str.includes("'")
@@ -72,6 +80,105 @@ const utils = {
 
     return dedentedLines.join("\n");
   },
+
+  /**
+   * Function that creates a (sorted) barrel index for each icon group.
+   * This should be executed AFTER generating the components and writing them to `dist/`.
+   *
+   * This can be enabled by setting `CREATE_INDEX` environment variable.
+   *
+   * @return {Promise} Completes when the index is created.
+   */
+  createIndex: async () => {
+    const iconGroupNames = ICON_GROUPS
+      .map(iconGroup => iconGroup.name)
+
+    await Promise.all(iconGroupNames.map(utils.createIconGroupIndex))  // Create group barrels.
+
+    const index = iconGroupNames
+      .map(iconGroup => `export * as ${iconGroup} from "./${iconGroup}.js";`)
+      .join("\n");
+
+    const types = iconGroupNames
+      .map(iconGroup => `export * as ${iconGroup} from "./${iconGroup}.d.ts";`)
+      .join("\n");
+
+    writeFile("dist/index.js", index);
+    writeFile("dist/index.d.ts", types);
+  },
+
+  /**
+   * Function that creates a (sorted) barrel index file exporting all generated components for `iconGroup`.
+   * This should be executed AFTER generating the components and writing them to `dist/`.
+   *
+   * This can be enabled by setting `CREATE_INDEX` environment variable.
+   *
+   * @param {ICON_GROUPS[number]["name"]} iconGroup - Group to create index fox.
+   * @return {Promise} Completes when the index is created.
+   */
+  createIconGroupIndex: async (iconGroup) => {
+    const dirItems = await readdir("dist");  // Read the generated components
+
+    const sources = dirItems
+      .map(dirItem => path.parse(path.join("dist", dirItem)).name)  // Strip extension
+      .filter(dirItemName => dirItemName.startsWith(`hi-${iconGroup}`))  // Remove declarations
+      .filter(dirItemName => !dirItemName.includes(".d"))  // Remove declarations
+
+    const index = sources.map(module => {
+      const className = utils.getClassName(module);
+      return `export { ${className} } from "./${module}.js";`;
+    })
+      .sort()  // Sorted for reproducible builds.
+      .join("\n") // Newlines.
+
+    const types = sources.map(module => {
+      const className = utils.getClassName(module);
+      return `export { ${className} } from "./${module}.d.ts";`;
+    })
+      .sort()  // Sorted for reproducible builds.
+      .join("\n") // Newlines.
+
+    writeFile(`dist/${iconGroup}.js`, index);
+    writeFile(`dist/${iconGroup}.d.ts`, types);
+  },
+
+  /**
+   * Returns the (es) class name for `file`.
+   * @param {string} file - The file to get class name for.
+   * @return {string} The class name
+   */
+  getClassName: file => {
+    const prefixes = ICON_GROUPS.map(iconGroup => `hi-${iconGroup.name}-`)  // Build array of prefixes.
+    const basename = prefixes.reduce((basename, prefix) => basename.replace(prefix, ""), path.basename(file))  // Strip prefixes.
+
+    const iconNamePascalCase = changeCase.pascalCase(basename, {
+      mergeAmbiguousCharacters: true,
+    });
+    return `Heroicon${iconNamePascalCase}Element`;
+  },
+
+  /**
+   * Checks for `name` in `process.env` and returns whether its considered truthy.
+   * A value is considered truthy if:
+   *
+   *  - Its set.
+   *  - Its value is not `"false"`.
+   *  - It's value is not `0`.
+   *
+   * All checks are case-insensitive.
+   *
+   * @param {string} name -  Environment variable to check for.
+   * @return {boolean}
+   */
+  checkEnvFlag: name => {
+    const _name = name.toUpperCase();
+    const _value = process.env[_name]?.toUpperCase();
+
+    if (_value && _value !== "FALSE" && _value !== "0") {
+      return true;
+    }
+    return false;
+  }
 };
 
 /**
@@ -96,6 +203,8 @@ const transpile = async ({ className, tagName, svg, css }) => ({
       }
     }
 
+    export { ${className} };
+
     if (!Object.is(customElements.get("${tagName}"), ${className})) {
       window.customElements.define("${tagName}", ${className});
     }
@@ -114,13 +223,6 @@ const transpile = async ({ className, tagName, svg, css }) => ({
 });
 
 await (async () => {
-  const iconsGroups = /** @type {const} */ ([
-    { path: "24/solid", name: "solid", size: "1.5rem" },
-    { path: "24/outline", name: "outline", size: "1.5rem" },
-    { path: "20/solid", name: "mini", size: "1.25rem" },
-    { path: "16/solid", name: "micro", size: "1rem" },
-  ]);
-
   const spinner = ora().start("Cleaning up previous build");
 
   await rm("dist", { recursive: true, force: true });
@@ -133,7 +235,7 @@ await (async () => {
 
   const transpilePromises = [];
 
-  for (const group of iconsGroups) {
+  for (const group of ICON_GROUPS) {
     for (const dirEntry of await readdir(
       path.join("node_modules", "heroicons", group.path),
       { withFileTypes: true },
@@ -153,15 +255,11 @@ await (async () => {
           encoding: "utf-8",
         }).then(async (svg) => {
           const iconNameRaw = path.basename(dirEntry.name, ".svg");
-
-          const iconNamePascalCase = changeCase.pascalCase(iconNameRaw, {
-            mergeAmbiguousCharacters: true,
-          });
-
+          const className = utils.getClassName(iconNameRaw)
           const tagName = `hi-${changeCase.kebabCase(group.name)}-${changeCase.kebabCase(iconNameRaw)}`;
 
           const { js, dts } = await transpile({
-            className: `Heroicon${iconNamePascalCase}Element`,
+            className: className,
             tagName,
             svg,
             css: `
@@ -186,5 +284,10 @@ await (async () => {
 
   await Promise.all(transpilePromises);
 
+  // Set `CREATE_INDEX` environment variable to create an `index.ts` barrel file in `dist/`.
+  if (utils.checkEnvFlag("CREATE_INDEX")) {
+    spinner.succeed().start("Creating index.ts barrel file")
+    await utils.createIndex();
+  }
   spinner.succeed();
 })();
